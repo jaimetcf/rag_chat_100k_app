@@ -1,0 +1,49 @@
+:root {
+  --rx-shadow: 0 18px 50px hsl(250 80% 8% / 0.45);
+  --rx-chat-margin: 0;
+  --rx-chat-column-max-width: 54rem;
+  --rx-page-padding-y: 0;
+  --rx-session-sidebar-width: 18.5rem;
+  --rx-session-sidebar-min-width: 16rem;
+  --rx-session-sidebar-max-width: 20rem;
+  --rx-session-sidebar-collapsed-width: 4rem;
+  --rx-session-row-trash-inset: 0.5rem;
+  --rx-delete-modal-max-width: 24rem;
+  --rx-delete-modal-padding: 1.35rem;
+  --rx-bp: 48rem;
+
+  --rx-gray-1: #07080f;
+  --rx-gray-2: rgba(16, 18, 36, 0.72);
+  --rx-gray-3: rgba(255, 255, 255, 0.07);
+  --rx-gray-4: rgba(255, 255, 255, 0.1);
+  --rx-gray-5: rgba(255, 255, 255, 0.12);
+  --rx-gray-6: rgba(255, 255, 255, 0.18);
+  --rx-gray-11: #b8c0e0;
+  --rx-gray-12: #f6f7ff;
+
+  --rx-violet: #a855f7;
+  --rx-fuchsia: #e879f9;
+  --rx-cyan: #22d3ee;
+  --rx-sky: #38bdf8;
+  --rx-pink: #fb7185;
+
+  --rx-blue-3: color-mix(in srgb, var(--rx-violet) 22%, transparent);
+  --rx-blue-8: var(--rx-cyan);
+  --rx-blue-9: #7c3aed;
+  --rx-blue-10: #8b5cf6;
+  --rx-blue-11: #c4b5fd;
+
+  --rx-black-a12: hsl(250 50% 4% / 0.72);
+
+  --accent-gradient: linear-gradient(135deg, #c084fc 0%, #22d3ee 100%);
+  --user-bubble: linear-gradient(135deg, #7c3aed 0%, #db2777 100%);
+  --glass: rgba(14, 16, 32, 0.62);
+  --border: rgba(255, 255, 255, 0.12);
+}
+
+@media (min-width: 48rem) {
+  :root {
+    --rx-chat-margin: 8%;
+    --rx-page-padding-y: 1.25rem;
+  }
+}
