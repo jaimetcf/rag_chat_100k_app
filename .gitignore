@@ -43,3 +43,6 @@ rag-chat-100k-*.json
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# k6 seeded credentials
+/load_tests/users.json

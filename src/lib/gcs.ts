@@ -30,11 +30,31 @@ function parseServiceAccountJson(raw: string): Record<string, unknown> | null {
   }
 }
 
+function looksLikeJson(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith("{") && trimmed.includes("private_key");
+}
+
+function resolveInlineCredentials(): Record<string, unknown> | null {
+  const candidates = [
+    getOptionalEnv("GCP_SERVICE_ACCOUNT_JSON"),
+    getOptionalEnv("GCP_SERVICE_ACCOUNT_KEY_FILE"),
+    getOptionalEnv("GOOGLE_APPLICATION_CREDENTIALS"),
+  ];
+  for (const candidate of candidates) {
+    const parsed = parseServiceAccountJson(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
 function resolveKeyFilePath(): string {
   const fromEnv =
     getOptionalEnv("GCP_SERVICE_ACCOUNT_KEY_FILE") ||
     getOptionalEnv("GOOGLE_APPLICATION_CREDENTIALS");
-  if (!fromEnv) {
+  if (!fromEnv || looksLikeJson(fromEnv)) {
     return "";
   }
   const resolved = path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
@@ -69,14 +89,19 @@ export function userObjectPath(userId: string, fileName: string): string {
 
 function wrapGcsError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
+  if (/ENAMETOOLONG|does not exist, or it is not a file/i.test(message)) {
+    throw new Error(
+      "GOOGLE_APPLICATION_CREDENTIALS is being treated as a file path. On Vercel, put the minified service-account JSON in GCP_SERVICE_ACCOUNT_JSON and leave GOOGLE_APPLICATION_CREDENTIALS unset."
+    );
+  }
   if (/default credentials|Could not load the default credentials/i.test(message)) {
     throw new Error(
-      "Google Cloud credentials are missing. Set GOOGLE_APPLICATION_CREDENTIALS to your service-account JSON file."
+      "Google Cloud credentials are missing. Locally, set GOOGLE_APPLICATION_CREDENTIALS to your service-account JSON file. On Vercel, set GCP_SERVICE_ACCOUNT_JSON."
     );
   }
   if (/Unexpected token|is not valid JSON/i.test(message)) {
     throw new Error(
-      "Could not parse GCP_SERVICE_ACCOUNT_JSON. Put the key file path in GOOGLE_APPLICATION_CREDENTIALS instead of pasting multiline JSON into .env.local."
+      "Could not parse GCP_SERVICE_ACCOUNT_JSON. Use minified JSON (one line) in that variable, or a key file path in GOOGLE_APPLICATION_CREDENTIALS."
     );
   }
   if (/403|Forbidden|does not have storage\.objects/i.test(message)) {
@@ -92,7 +117,7 @@ function getStorage(): Storage {
     return storage;
   }
   const projectId = getOptionalEnv("GCP_PROJECT_ID");
-  const inline = parseServiceAccountJson(getOptionalEnv("GCP_SERVICE_ACCOUNT_JSON"));
+  const inline = resolveInlineCredentials();
   if (inline) {
     storage = new Storage({
       credentials: inline as StorageOptions["credentials"],
@@ -111,6 +136,15 @@ function getStorage(): Storage {
         : {}),
     });
     return storage;
+  }
+
+  const credHint =
+    getOptionalEnv("GCP_SERVICE_ACCOUNT_KEY_FILE") ||
+    getOptionalEnv("GOOGLE_APPLICATION_CREDENTIALS");
+  if (credHint) {
+    throw new Error(
+      "GOOGLE_APPLICATION_CREDENTIALS is set but is not a readable key file. On Vercel, set GCP_SERVICE_ACCOUNT_JSON to the minified service-account JSON instead."
+    );
   }
 
   storage = new Storage({
