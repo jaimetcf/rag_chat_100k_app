@@ -447,6 +447,7 @@ input::placeholder {
   margin-top: 8vh;
 }
 
+.page-loading,
 .docs-loading {
   margin: auto;
   padding: 2rem;
@@ -745,10 +746,30 @@ input::placeholder {
 }
 
 .primary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
   background: var(--accent-gradient);
   color: #071018;
   box-shadow: 0 8px 24px rgba(34, 211, 238, 0.18);
   padding: 0.7rem 0.95rem;
+}
+
+.btn-spinner {
+  width: 1.05rem;
+  height: 1.05rem;
+  border: 2px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: btn-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .primary-btn.primary-label-fg {
@@ -831,6 +852,11 @@ input::placeholder {
   text-decoration: none;
   padding: 0;
   font-weight: 700;
+}
+
+.link-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .spacer {

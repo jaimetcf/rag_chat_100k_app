@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
-import { hashPassword, verifyPassword } from "@/lib/auth";
+import { hashPassword, sanitizeDisplayName, verifyPassword } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 import {
   formatMessageTimePtBr,
@@ -86,12 +86,13 @@ export async function insertUserSafe(
   displayName: string | null,
 ): Promise<string | null> {
   const pool = await getPool();
+  const storedDisplayName = sanitizeDisplayName(displayName, password);
   try {
     const result = await pool.query<{ id: string }>(
       `INSERT INTO users (email, display_name, password_hash)
        VALUES ($1, $2, $3)
        RETURNING id`,
-      [normalizeEmail(email), displayName, hashPassword(password)],
+      [normalizeEmail(email), storedDisplayName, hashPassword(password)],
     );
     return result.rows[0]?.id ?? null;
   } catch (error) {
@@ -139,7 +140,17 @@ export async function authenticateUser(
   if (!verifyPassword(password, row.password_hash)) {
     return null;
   }
-  return String(row.id);
+  const userId = String(row.id);
+  if (typeof row.display_name === "string" && row.display_name === password) {
+    const pool = await getPool();
+    await pool.query(
+      `UPDATE users
+       SET display_name = NULL
+       WHERE id = $1 AND display_name IS NOT NULL`,
+      [userId],
+    );
+  }
+  return userId;
 }
 
 export async function listAllChatSessions(

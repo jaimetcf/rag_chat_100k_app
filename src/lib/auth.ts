@@ -12,6 +12,18 @@ export function hashPassword(plain: string): string {
   return bcrypt.hashSync(plain, 12);
 }
 
+/** Never persist a password (or empty string) as a public display name. */
+export function sanitizeDisplayName(
+  displayName: string | null | undefined,
+  password: string,
+): string | null {
+  const trimmed = typeof displayName === "string" ? displayName.trim() : "";
+  if (!trimmed || trimmed === password) {
+    return null;
+  }
+  return trimmed;
+}
+
 export function verifyPassword(plain: string, passwordHash: string): boolean {
   try {
     return bcrypt.compareSync(plain, passwordHash);

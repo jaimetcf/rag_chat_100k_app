@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { verifyPassword } from "@/lib/auth";
 import { getRequiredEnv } from "@/lib/env";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -68,6 +69,57 @@ async function ensureUsersPasswordHashColumn(p: Pool): Promise<void> {
   }
 }
 
+const DISPLAY_NAME_SCRUB_COMMENT = "Optional public nickname. password_scrubbed=1";
+
+/**
+ * If a password manager filled display_name with the plaintext password,
+ * drop those values. Runs once per database (column comment is the marker).
+ */
+async function scrubPasswordsStoredAsDisplayName(p: Pool): Promise<void> {
+  const tableExists = await p.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'users'
+    )`,
+  );
+  if (!tableExists.rows[0]?.exists) {
+    return;
+  }
+
+  const comment = await p.query<{ comment: string | null }>(
+    `SELECT col_description(
+       'public.users'::regclass,
+       (SELECT attnum
+        FROM pg_attribute
+        WHERE attrelid = 'public.users'::regclass
+          AND attname = 'display_name'
+          AND NOT attisdropped)
+     ) AS comment`,
+  );
+  if ((comment.rows[0]?.comment ?? "").includes("password_scrubbed=1")) {
+    return;
+  }
+
+  const rows = await p.query<{ id: string; display_name: string; password_hash: string }>(
+    `SELECT id, display_name, password_hash
+     FROM users
+     WHERE display_name IS NOT NULL AND display_name <> ''`,
+  );
+  for (const row of rows.rows) {
+    if (verifyPassword(row.display_name, row.password_hash)) {
+      await p.query(
+        `UPDATE users
+         SET display_name = NULL
+         WHERE id = $1`,
+        [row.id],
+      );
+    }
+  }
+
+  await p.query(`COMMENT ON COLUMN users.display_name IS '${DISPLAY_NAME_SCRUB_COMMENT}'`);
+}
+
 function readDatabaseUrlFromFile(filePath: string): string {
   if (!existsSync(filePath)) {
     return "";
@@ -126,5 +178,6 @@ export async function getPool(): Promise<Pool> {
     allowExitOnIdle: true,
   });
   await ensureUsersPasswordHashColumn(pool);
+  await scrubPasswordsStoredAsDisplayName(pool);
   return pool;
 }

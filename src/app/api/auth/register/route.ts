@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { issueUserToken, SESSION_COOKIE_NAME } from "@/lib/auth";
+import { issueUserToken, sanitizeDisplayName, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { insertUserSafe } from "@/lib/repository";
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   const email = String(body?.email ?? "").trim();
   const password = String(body?.password ?? "");
-  const displayNameRaw = String(body?.displayName ?? "").trim();
+  const displayName = sanitizeDisplayName(body?.displayName, password);
   const termsAccepted = Boolean(body?.termsAccepted ?? true);
 
   if (!termsAccepted) {
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const userId = await insertUserSafe(email, password, displayNameRaw || null);
+  const userId = await insertUserSafe(email, password, displayName);
   if (!userId) {
     return NextResponse.json(
       { error: "An account with this email already exists." },

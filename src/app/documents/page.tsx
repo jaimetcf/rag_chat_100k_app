@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/AppNav";
+import { useAuth } from "@/components/AuthProvider";
 import { formatFileSize } from "@/lib/formatting";
 import { MAX_USER_DOCUMENTS } from "@/lib/documents-config";
 import type { DocumentItem } from "@/types/documents";
@@ -50,9 +51,8 @@ const FileIcon = () => (
 
 export default function DocumentsPage() {
   const router = useRouter();
+  const { isReady, loggedIn, email: currentUserEmail, logout: authLogout } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [currentUserEmail, setCurrentUserEmail] = useState("");
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [maxDocuments, setMaxDocuments] = useState(MAX_USER_DOCUMENTS);
   const [isLoading, setIsLoading] = useState(true);
@@ -74,20 +74,17 @@ export default function DocumentsPage() {
   };
 
   useEffect(() => {
+    if (!isReady) {
+      return;
+    }
+    if (!loggedIn) {
+      router.replace("/");
+      return;
+    }
+
     let cancelled = false;
     const bootstrap = async () => {
       try {
-        const res = await fetch("/api/me");
-        const data = await readJsonOrThrow(res);
-        if (cancelled) {
-          return;
-        }
-        if (!data.loggedIn) {
-          router.replace("/");
-          return;
-        }
-        setLoggedIn(true);
-        setCurrentUserEmail(String(data.email ?? ""));
         await loadDocuments();
       } catch (loadError) {
         if (!cancelled) {
@@ -103,7 +100,7 @@ export default function DocumentsPage() {
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, [isReady, loggedIn, router]);
 
   const onPickFiles = () => {
     fileInputRef.current?.click();
@@ -167,15 +164,15 @@ export default function DocumentsPage() {
   };
 
   const logout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
+    await authLogout();
     router.replace("/");
   };
 
-  if (!loggedIn && isLoading) {
+  if (!isReady || !loggedIn) {
     return (
       <div className="page-shell">
         <AppNav />
-        <div className="docs-loading muted">Loading documents…</div>
+        <div className="page-loading muted">Loading documents…</div>
       </div>
     );
   }

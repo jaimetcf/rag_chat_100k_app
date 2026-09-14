@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Plus_Jakarta_Sans } from "next/font/google";
+import { AuthProvider } from "@/components/AuthProvider";
 import "./globals.css";
 import "./theme-tokens.css";
 
@@ -32,7 +33,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={sans.className}>{children}</body>
+      <body className={sans.className}>
+        <AuthProvider>{children}</AuthProvider>
+      </body>
     </html>
   );
 }

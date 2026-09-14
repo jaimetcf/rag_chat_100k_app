@@ -3,6 +3,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { AppNav } from "@/components/AppNav";
+import { useAuth } from "@/components/AuthProvider";
 import { HeaderMenu } from "@/components/HeaderMenu";
 import { LLM_MODEL_CHOICES } from "@/lib/models";
 import type { SessionItem, ThreadMessage } from "@/types/chat";
@@ -20,10 +21,9 @@ async function readJsonOrThrow(res: Response) {
 }
 
 export default function Home() {
+  const { isReady, loggedIn, email: currentUserEmail, refresh, logout: authLogout } = useAuth();
   const [authPanel, setAuthPanel] = useState<AuthPanel>("login");
   const [authError, setAuthError] = useState("");
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [currentUserEmail, setCurrentUserEmail] = useState("");
 
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -31,6 +31,7 @@ export default function Home() {
   const [registerPassword, setRegisterPassword] = useState("");
   const [registerDisplayName, setRegisterDisplayName] = useState("");
   const [registerTermsAccepted, setRegisterTermsAccepted] = useState(true);
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
 
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState("");
@@ -90,65 +91,41 @@ export default function Home() {
     return (data.sessions ?? []) as SessionItem[];
   };
 
-  const syncMe = async () => {
-    const res = await fetch("/api/me");
-    const data = await readJsonOrThrow(res);
-    if (!data.loggedIn) {
-      setLoggedIn(false);
-      setCurrentUserEmail("");
-      setSessions([]);
-      setCurrentSessionId("");
-      setThreadMessages([]);
+  useEffect(() => {
+    if (!isReady || !loggedIn) {
       return;
     }
-    setLoggedIn(true);
-    setCurrentUserEmail(String(data.email ?? ""));
-    const nextSessions = await refreshSessions();
-    if (nextSessions.length > 0) {
-      await loadMessages(nextSessions[0].id);
-    }
-  };
 
-  useEffect(() => {
     let cancelled = false;
-    const bootstrap = async () => {
-      const res = await fetch("/api/me");
-      const data = await readJsonOrThrow(res);
-      if (cancelled) {
-        return;
-      }
-      if (!data.loggedIn) {
-        setLoggedIn(false);
-        setCurrentUserEmail("");
-        setSessions([]);
-        setCurrentSessionId("");
-        setThreadMessages([]);
-        return;
-      }
-      setLoggedIn(true);
-      setCurrentUserEmail(String(data.email ?? ""));
-      const sessionsRes = await fetch("/api/sessions");
-      const sessionsData = await readJsonOrThrow(sessionsRes);
-      if (cancelled) {
-        return;
-      }
-      const nextSessions = (sessionsData.sessions ?? []) as SessionItem[];
-      setSessions(nextSessions);
-      if (nextSessions.length > 0) {
-        const messagesRes = await fetch(`/api/sessions/${nextSessions[0].id}`);
-        const messagesData = await readJsonOrThrow(messagesRes);
+    const load = async () => {
+      try {
+        const sessionsRes = await fetch("/api/sessions");
+        const sessionsData = await readJsonOrThrow(sessionsRes);
         if (cancelled) {
           return;
         }
-        setCurrentSessionId(nextSessions[0].id);
-        setThreadMessages((messagesData.messages ?? []) as ThreadMessage[]);
+        const nextSessions = (sessionsData.sessions ?? []) as SessionItem[];
+        setSessions(nextSessions);
+        if (nextSessions.length > 0) {
+          const messagesRes = await fetch(`/api/sessions/${nextSessions[0].id}`);
+          const messagesData = await readJsonOrThrow(messagesRes);
+          if (cancelled) {
+            return;
+          }
+          setCurrentSessionId(nextSessions[0].id);
+          setThreadMessages((messagesData.messages ?? []) as ThreadMessage[]);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setAuthError(error instanceof Error ? error.message : String(error));
+        }
       }
     };
-    void bootstrap();
+    void load();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isReady, loggedIn]);
 
   useEffect(() => {
     scrollToBottom();
@@ -163,7 +140,11 @@ export default function Home() {
   }, []);
 
   const handleLogin = async () => {
+    if (isAuthSubmitting) {
+      return;
+    }
     setAuthError("");
+    setIsAuthSubmitting(true);
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
@@ -175,14 +156,20 @@ export default function Home() {
       });
       await readJsonOrThrow(res);
       setLoginPassword("");
-      await syncMe();
+      await refresh();
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsAuthSubmitting(false);
     }
   };
 
   const handleRegister = async () => {
+    if (isAuthSubmitting) {
+      return;
+    }
     setAuthError("");
+    setIsAuthSubmitting(true);
     try {
       const res = await fetch("/api/auth/register", {
         method: "POST",
@@ -196,20 +183,24 @@ export default function Home() {
       });
       await readJsonOrThrow(res);
       setRegisterPassword("");
-      await syncMe();
+      await refresh();
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsAuthSubmitting(false);
     }
   };
 
   const logout = async () => {
     setModelMenuOpen(false);
-    await fetch("/api/auth/logout", { method: "POST" });
+    await authLogout();
     setAuthPanel("login");
     setAuthError("");
     setRegisterTermsAccepted(true);
     setSessionsSidebarCollapsed(false);
-    await syncMe();
+    setSessions([]);
+    setCurrentSessionId("");
+    setThreadMessages([]);
   };
 
   const createEmptySession = async () => {
@@ -337,6 +328,15 @@ export default function Home() {
       }
     };
 
+  if (!isReady) {
+    return (
+      <div className="page-shell">
+        <AppNav />
+        <div className="page-loading muted">Loading…</div>
+      </div>
+    );
+  }
+
   return (
     <div className="page-shell">
       <AppNav userEmail={loggedIn ? currentUserEmail : ""} onLogout={() => void logout()}>
@@ -455,48 +455,73 @@ export default function Home() {
         <main className="main-area">
           {!loggedIn ? (
             <section className="auth-wrap">
-              <div className="card">
+              <div className="card" aria-busy={isAuthSubmitting}>
                 {authPanel === "register" ? (
                   <>
                     <h2>Create an account</h2>
-                    <label>Email address</label>
+                    <label htmlFor="register-email">Email address</label>
                     <input
+                      id="register-email"
+                      name="email"
                       placeholder="you@example.com"
                       type="email"
+                      autoComplete="email"
                       value={registerEmail}
+                      disabled={isAuthSubmitting}
                       onChange={(e) => setRegisterEmail(e.target.value)}
                       onKeyDown={onEnterSubmit(() => void handleRegister())}
                     />
-                    <label>Password</label>
+                    <label htmlFor="register-display-name">Display name (optional)</label>
                     <input
-                      placeholder="At least 8 characters"
-                      type="password"
-                      value={registerPassword}
-                      onChange={(e) => setRegisterPassword(e.target.value)}
+                      id="register-display-name"
+                      name="displayName"
+                      placeholder="How we greet you"
+                      type="text"
+                      autoComplete="nickname"
+                      value={registerDisplayName}
+                      disabled={isAuthSubmitting}
+                      onChange={(e) => setRegisterDisplayName(e.target.value)}
                       onKeyDown={onEnterSubmit(() => void handleRegister())}
                     />
-                    <label>Display name (optional)</label>
+                    <label htmlFor="register-password">Password</label>
                     <input
-                      placeholder="How we greet you"
-                      value={registerDisplayName}
-                      onChange={(e) => setRegisterDisplayName(e.target.value)}
+                      id="register-password"
+                      name="new-password"
+                      placeholder="At least 8 characters"
+                      type="password"
+                      autoComplete="new-password"
+                      value={registerPassword}
+                      disabled={isAuthSubmitting}
+                      onChange={(e) => setRegisterPassword(e.target.value)}
                       onKeyDown={onEnterSubmit(() => void handleRegister())}
                     />
                     <label className="terms">
                       <input
                         type="checkbox"
                         checked={registerTermsAccepted}
+                        disabled={isAuthSubmitting}
                         onChange={(e) => setRegisterTermsAccepted(e.target.checked)}
                       />
                       Agree to Terms and Conditions
                     </label>
-                    <button type="button" className="primary-btn full" onClick={() => void handleRegister()}>
-                      Register
+                    <button
+                      type="button"
+                      className="primary-btn full"
+                      onClick={() => void handleRegister()}
+                      disabled={isAuthSubmitting}
+                      aria-busy={isAuthSubmitting}
+                    >
+                      {isAuthSubmitting ? <span className="btn-spinner" aria-hidden /> : null}
+                      {isAuthSubmitting ? "Registering…" : "Register"}
                     </button>
                     {authError ? <div className="auth-error">{authError}</div> : null}
                     <p className="switch-auth">
                       Already registered?{" "}
-                      <button className="link-btn" onClick={() => setAuthPanel("login")}>
+                      <button
+                        className="link-btn"
+                        onClick={() => setAuthPanel("login")}
+                        disabled={isAuthSubmitting}
+                      >
                         Sign in
                       </button>
                     </p>
@@ -504,29 +529,48 @@ export default function Home() {
                 ) : (
                   <>
                     <h2>Sign in to your account</h2>
-                    <label>Email address</label>
+                    <label htmlFor="login-email">Email address</label>
                     <input
+                      id="login-email"
+                      name="email"
                       placeholder="you@example.com"
                       type="email"
+                      autoComplete="email"
                       value={loginEmail}
+                      disabled={isAuthSubmitting}
                       onChange={(e) => setLoginEmail(e.target.value)}
                       onKeyDown={onEnterSubmit(() => void handleLogin())}
                     />
-                    <label>Password</label>
+                    <label htmlFor="login-password">Password</label>
                     <input
+                      id="login-password"
+                      name="current-password"
                       placeholder="Enter your password"
                       type="password"
+                      autoComplete="current-password"
                       value={loginPassword}
+                      disabled={isAuthSubmitting}
                       onChange={(e) => setLoginPassword(e.target.value)}
                       onKeyDown={onEnterSubmit(() => void handleLogin())}
                     />
-                    <button type="button" className="primary-btn full" onClick={() => void handleLogin()}>
-                      Sign in
+                    <button
+                      type="button"
+                      className="primary-btn full"
+                      onClick={() => void handleLogin()}
+                      disabled={isAuthSubmitting}
+                      aria-busy={isAuthSubmitting}
+                    >
+                      {isAuthSubmitting ? <span className="btn-spinner" aria-hidden /> : null}
+                      {isAuthSubmitting ? "Signing in…" : "Sign in"}
                     </button>
                     {authError ? <div className="auth-error">{authError}</div> : null}
                     <p className="switch-auth">
                       New here?{" "}
-                      <button className="link-btn" onClick={() => setAuthPanel("register")}>
+                      <button
+                        className="link-btn"
+                        onClick={() => setAuthPanel("register")}
+                        disabled={isAuthSubmitting}
+                      >
                         Sign up
                       </button>
                     </p>
