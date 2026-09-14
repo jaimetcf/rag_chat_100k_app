@@ -61,3 +61,38 @@ export function isSeededUser(value: unknown): value is SeededUser {
   const row = value as SeededUser;
   return Boolean(row.userId && row.email && row.password);
 }
+
+type JsonResponse = {
+  status: number;
+  body?: unknown;
+  headers?: Record<string, string | string[] | undefined>;
+  json: (selector?: string) => unknown;
+};
+
+export function jsonBody<T>(res: JsonResponse): T | null {
+  if (res.status < 200 || res.status >= 300) {
+    return null;
+  }
+  const raw = res.body;
+  if (raw == null || raw === "") {
+    return null;
+  }
+  if (typeof raw === "string" && !raw.trim()) {
+    return null;
+  }
+  try {
+    return res.json() as T;
+  } catch {
+    return null;
+  }
+}
+
+export function retryAfterSeconds(res: JsonResponse, fallback = 2): number {
+  const header = res.headers?.["Retry-After"] ?? res.headers?.["retry-after"];
+  const raw = Array.isArray(header) ? header[0] : header;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.min(parsed, 15);
+}

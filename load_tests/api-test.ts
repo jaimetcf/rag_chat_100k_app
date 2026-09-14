@@ -6,8 +6,10 @@ import type { Options } from "k6/options";
 import {
   cookieHeaders,
   isSeededUser,
+  jsonBody,
   jsonHeaders,
   parseSetCookie,
+  retryAfterSeconds,
   type CookieJar,
   type SeededUser,
   fromProjectRoot,
@@ -95,7 +97,7 @@ export function setup() {
   const health = http.get(`${BASE_URL}/api/health`);
   const healthy = check(health, {
     "health ok": (r) => r.status === 200,
-    "tier rag_chat_100k": (r) => (r.json() as { tier?: string })?.tier === "rag_chat_100k",
+    "tier rag_chat_100k": (r) => jsonBody<{ tier?: string }>(r)?.tier === "rag_chat_100k",
   });
   if (!healthy) {
     exec.test.abort(`Health check failed against ${BASE_URL}`);
@@ -121,7 +123,7 @@ export default function () {
   group("create chat", () => {
     const create = http.post(`${BASE_URL}/api/sessions`, null, { headers });
     check(create, { "create session": (r) => r.status === 200 });
-    sessionId = (create.json() as { sessionId?: string })?.sessionId ?? "";
+    sessionId = jsonBody<{ sessionId?: string }>(create)?.sessionId ?? "";
   });
 
   if (sessionId) {
@@ -138,8 +140,11 @@ export default function () {
         );
         check(chat, {
           "chat 200": (r) => r.status === 200,
-          "same session": (r) => (r.json() as { sessionId?: string })?.sessionId === sessionId,
+          "same session": (r) => jsonBody<{ sessionId?: string }>(r)?.sessionId === sessionId,
         });
+        if (chat.status === 429) {
+          sleep(retryAfterSeconds(chat));
+        }
         sleep(Math.random() * 0.4 + 0.2);
       }
     });

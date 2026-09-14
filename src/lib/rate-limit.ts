@@ -99,8 +99,19 @@ export async function checkRateLimit(
   return checkLocal(key, limit, windowMs);
 }
 
-/** Chat: 20 requests / 10 minutes per user at 100k DAU. */
-export const CHAT_RATE_LIMIT = { limit: 20, windowMs: 10 * 60 * 1000 };
+function readPositiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+/** Chat: sized so a 12-question session can complete; override with CHAT_RATE_LIMIT. */
+export const CHAT_RATE_LIMIT = {
+  limit: readPositiveInt(process.env.CHAT_RATE_LIMIT, 80),
+  windowMs: readPositiveInt(process.env.CHAT_RATE_WINDOW_MS, 10 * 60 * 1000),
+};
 
 /** Auth endpoints: 10 attempts / 15 minutes per IP bucket (local only without Redis IP key). */
 export const AUTH_RATE_LIMIT = { limit: 10, windowMs: 15 * 60 * 1000 };

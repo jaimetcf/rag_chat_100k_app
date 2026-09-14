@@ -231,16 +231,11 @@ export async function deleteChatSession(
   return (result.rowCount ?? 0) > 0;
 }
 
-export async function listMessages(
-  userId: string,
+async function selectSessionMessages(
   sessionId: string,
-  opts?: { limit?: number },
+  limit: number,
 ): Promise<ThreadMessageDto[]> {
-  if (!(await assertSessionOwned(userId, sessionId))) {
-    return [];
-  }
   const pool = await getPool();
-  const limit = Math.min(200, Math.max(1, opts?.limit ?? 100));
   const result = await pool.query<DbMessage>(
     `SELECT id, session_id, role, content, model, token_usage_json, sequence_no, created_at
      FROM chat_messages
@@ -250,6 +245,54 @@ export async function listMessages(
     [sessionId, limit],
   );
   return result.rows.reverse().map(mapThreadMessageRow);
+}
+
+export async function listMessages(
+  userId: string,
+  sessionId: string,
+  opts?: { limit?: number },
+): Promise<ThreadMessageDto[]> {
+  if (!(await assertSessionOwned(userId, sessionId))) {
+    return [];
+  }
+  const limit = Math.min(200, Math.max(1, opts?.limit ?? 100));
+  return selectSessionMessages(sessionId, limit);
+}
+
+/** One checkout: verify ownership and load the thread, or null if not owned. */
+export async function loadOwnedSessionThread(
+  userId: string,
+  sessionId: string,
+  opts?: { limit?: number },
+): Promise<ThreadMessageDto[] | null> {
+  if (!sessionId) {
+    return null;
+  }
+  const pool = await getPool();
+  const client = await pool.connect();
+  const limit = Math.min(200, Math.max(1, opts?.limit ?? 100));
+  try {
+    const owned = await client.query(
+      `SELECT 1
+       FROM chat_sessions
+       WHERE id = $1 AND user_id = $2 AND archived_at IS NULL`,
+      [sessionId, userId],
+    );
+    if (!owned.rows[0]) {
+      return null;
+    }
+    const result = await client.query<DbMessage>(
+      `SELECT id, session_id, role, content, model, token_usage_json, sequence_no, created_at
+       FROM chat_messages
+       WHERE session_id = $1
+       ORDER BY sequence_no DESC, created_at DESC
+       LIMIT $2`,
+      [sessionId, limit],
+    );
+    return result.rows.reverse().map(mapThreadMessageRow);
+  } finally {
+    client.release();
+  }
 }
 
 async function withSessionLock<T>(
@@ -290,18 +333,18 @@ export async function insertMessage(args: {
   content: string;
   model?: string | null;
   tokenUsage?: Record<string, unknown> | null;
-}): Promise<string | null> {
-  const insertedId = await withSessionLock(
+}): Promise<ThreadMessageDto | null> {
+  const inserted = await withSessionLock(
     args.userId,
     args.sessionId,
     async (client) => {
-      const result = await client.query<{ id: string }>(
+      const result = await client.query<DbMessage>(
         `INSERT INTO chat_messages (session_id, role, content, model, token_usage_json, sequence_no)
        VALUES (
          $1, $2, $3, $4, $5,
          (SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM chat_messages WHERE session_id = $1)
        )
-       RETURNING id`,
+       RETURNING id, role, content, model, token_usage_json, sequence_no, created_at`,
         [
           args.sessionId,
           args.role,
@@ -316,8 +359,9 @@ export async function insertMessage(args: {
        WHERE id = $1`,
         [args.sessionId],
       );
-      return result.rows[0]?.id ?? null;
+      const row = result.rows[0];
+      return row ? mapThreadMessageRow(row) : null;
     },
   );
-  return insertedId;
+  return inserted;
 }

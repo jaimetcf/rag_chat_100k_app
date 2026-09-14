@@ -5,6 +5,7 @@ import type { Options } from "k6/options";
 import {
   cookieHeaders,
   emailFor,
+  jsonBody,
   parseSetCookie,
   type CookieJar,
   type SeededUser,
@@ -12,7 +13,7 @@ import {
 } from "./lib.ts";
 
 /**
- * Seed 100 load-test users, upload codigo_civil.md for each, and write users.json.
+ * Seed 180 load-test users, upload codigo_civil.md for each, and write users.json.
  * Users are created one at a time, 6s after the previous one finishes.
  *
  * Run from the app root so file paths resolve:
@@ -20,14 +21,14 @@ import {
  *
  * Env (from .env.local via dotenv, or the shell):
  *   BASE_URL         — app URL (default http://localhost:3000)
- *   K6_USER_COUNT    — users to create (default 100)
+ *   K6_USER_COUNT    — users to create (default 180)
  *   K6_SEED_GAP_SEC  — wait between users (default 6)
  *   K6_DOC_PATH      — markdown file to upload (default load_tests/codigo_civil.md)
  *   USERS_FILE       — output path (default load_tests/users.json)
  */
 
 const BASE_URL = (__ENV.BASE_URL || "http://localhost:3000").replace(/\/$/, "");
-const USER_COUNT = Math.max(1, Number(__ENV.K6_USER_COUNT || "100"));
+const USER_COUNT = Math.max(1, Number(__ENV.K6_USER_COUNT || "180"));
 const SEED_GAP_SEC = Math.max(0, Number(__ENV.K6_SEED_GAP_SEC || "6"));
 const USERS_FILE = __ENV.USERS_FILE || "load_tests/users.json";
 const PASSWORD = "loadtest-password-12";
@@ -77,7 +78,7 @@ function registerOrLogin(email: string): CookieJar | null {
 
 function hasCodigoCivil(jar: CookieJar): boolean {
   const docs = http.get(`${BASE_URL}/api/documents`, { headers: cookieHeaders(jar) });
-  const names = ((docs.json() as { documents?: Array<{ name?: string }> })?.documents ?? []).map(
+  const names = (jsonBody<{ documents?: Array<{ name?: string }> }>(docs)?.documents ?? []).map(
     (doc) => doc.name
   );
   return names.includes(DOC_NAME);
@@ -97,7 +98,7 @@ function collectSeededUsers(): SeededUser[] {
     }
     const jar = parseSetCookie(loginRes.headers as Record<string, string[] | string | undefined>);
     const me = http.get(`${BASE_URL}/api/me`, { headers: cookieHeaders(jar) });
-    const userId = (me.json() as { userId?: string })?.userId;
+    const userId = jsonBody<{ userId?: string }>(me)?.userId;
     if (userId) {
       users.push({ userId, email, password: PASSWORD });
     }
@@ -110,7 +111,7 @@ export function setup() {
   const health = http.get(`${BASE_URL}/api/health`);
   const healthy = check(health, {
     "health ok": (r) => r.status === 200,
-    "tier rag_chat_100k": (r) => (r.json() as { tier?: string })?.tier === "rag_chat_100k",
+    "tier rag_chat_100k": (r) => jsonBody<{ tier?: string }>(r)?.tier === "rag_chat_100k",
   });
   if (!healthy) {
     exec.test.abort(`Health check failed against ${BASE_URL}`);
@@ -131,7 +132,7 @@ export default function () {
 
   const me = http.get(`${BASE_URL}/api/me`, { headers: cookieHeaders(jar) });
   check(me, {
-    "me has userId": (r) => Boolean((r.json() as { userId?: string })?.userId),
+    "me has userId": (r) => Boolean(jsonBody<{ userId?: string }>(r)?.userId),
   });
 
   if (!hasCodigoCivil(jar)) {
@@ -143,8 +144,8 @@ export default function () {
     check(upload, {
       "upload 200": (r) => r.status === 200,
       "uploaded codigo_civil.md": (r) => {
-        const body = r.json() as { uploaded?: string[] };
-        return Boolean(body.uploaded?.includes(DOC_NAME));
+        const body = jsonBody<{ uploaded?: string[] }>(r);
+        return Boolean(body?.uploaded?.includes(DOC_NAME));
       },
     });
   }

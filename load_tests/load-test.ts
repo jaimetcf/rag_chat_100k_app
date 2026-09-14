@@ -1,6 +1,7 @@
 import http from "k6/http";
 import { check, group, sleep } from "k6";
 import type { Options } from "k6/options";
+import { cookieHeader, jsonBody, parseSetCookie } from "./lib.ts";
 
 /**
  * Load test for rag_chat_100k (~100k DAU target).
@@ -42,29 +43,6 @@ type AuthState = {
   jar: Record<string, string>;
 };
 
-function parseSetCookie(headers: Record<string, string[] | string | undefined>): Record<string, string> {
-  const jar: Record<string, string> = {};
-  const raw = headers["Set-Cookie"] ?? headers["set-cookie"];
-  if (!raw) {
-    return jar;
-  }
-  const list = Array.isArray(raw) ? raw : [raw];
-  for (const line of list) {
-    const part = line.split(";")[0]?.trim();
-    const eq = part?.indexOf("=");
-    if (eq && eq > 0) {
-      jar[part!.slice(0, eq)] = part!.slice(eq + 1);
-    }
-  }
-  return jar;
-}
-
-function cookieHeader(jar: Record<string, string>): string {
-  return Object.entries(jar)
-    .map(([k, v]) => `${k}=${v}`)
-    .join("; ");
-}
-
 function registerAndLogin(): AuthState | null {
   const email = `k6-${__VU}-${__ITER}-${Date.now()}@loadtest.local`;
   const password = "loadtest-password-12";
@@ -92,7 +70,7 @@ export function setup() {
   const health = http.get(`${BASE_URL}/api/health`);
   check(health, {
     "health ok": (r) => r.status === 200,
-    "tier rag_chat_100k": (r) => (r.json() as { tier?: string })?.tier === "rag_chat_100k",
+    "tier rag_chat_100k": (r) => jsonBody<{ tier?: string }>(r)?.tier === "rag_chat_100k",
   });
   return { baseUrl: BASE_URL };
 }
@@ -118,7 +96,7 @@ export default function () {
 
     const create = http.post(`${BASE_URL}/api/sessions`, null, { headers });
     check(create, { "create session": (r) => r.status === 200 });
-    const sessionId = (create.json() as { sessionId?: string })?.sessionId;
+    const sessionId = jsonBody<{ sessionId?: string }>(create)?.sessionId;
     if (sessionId) {
       const thread = http.get(`${BASE_URL}/api/sessions/${sessionId}`, { headers });
       check(thread, { "thread 200": (r) => r.status === 200 });
@@ -137,7 +115,7 @@ export default function () {
       );
       check(chat, {
         "chat 200": (r) => r.status === 200,
-        "has sessionId": (r) => Boolean((r.json() as { sessionId?: string })?.sessionId),
+        "has sessionId": (r) => Boolean(jsonBody<{ sessionId?: string }>(r)?.sessionId),
       });
     });
   }

@@ -8,12 +8,13 @@ import {
 } from "@/lib/openai";
 import { formatRagContext, retrieveRelevantChunks } from "@/lib/rag";
 import { formatMessageTimePtBr } from "@/lib/formatting";
+import { isPoolConnectError } from "@/lib/db";
 import {
-  assertSessionOwned,
   createChatSession,
   insertMessage,
-  listMessages,
+  loadOwnedSessionThread,
   updateChatSessionTitle,
+  type ThreadMessageDto,
 } from "@/lib/repository";
 import { CHAT_RATE_LIMIT, checkRateLimit } from "@/lib/rate-limit";
 import { currentUserIdFromCookie } from "@/lib/server-auth";
@@ -22,6 +23,29 @@ export const maxDuration = 60;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function dbFailureResponse(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const status = isPoolConnectError(error) ? 503 : 500;
+  return NextResponse.json(
+    { error: message },
+    {
+      status,
+      ...(status === 503 ? { headers: { "Retry-After": "5" } } : {}),
+    },
+  );
+}
+
+function toApiMessages(history: ThreadMessageDto[], question: string): ApiMessage[] {
+  const messages: ApiMessage[] = history
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .filter((m) => !(m.role === "assistant" && !m.content.trim()))
+    .map((m) => ({ role: m.role, content: m.content }));
+  if (!messages.length || messages[messages.length - 1]?.content !== question) {
+    messages.push({ role: "user", content: question });
+  }
+  return messages;
 }
 
 export async function POST(request: Request) {
@@ -56,98 +80,106 @@ export async function POST(request: Request) {
     );
   }
 
-  let sessionId = providedSessionId;
-  if (!sessionId || !(await assertSessionOwned(userId, sessionId))) {
-    sessionId = await createChatSession(userId);
-  }
-
-  const existing = await listMessages(userId, sessionId);
-  const isFirstMessage = existing.length === 0;
-
-  await insertMessage({
-    userId,
-    sessionId,
-    role: "user",
-    content: question,
-    model,
-    tokenUsage: null,
-  });
-
-  const runTitle: Promise<void> = isFirstMessage
-    ? (async () => {
-        try {
-          const title = await summarizeSessionTitle(question);
-          if (title) {
-            await updateChatSessionTitle(userId, sessionId, title);
-          }
-        } catch {
-          // Session title is optional.
-        }
-      })()
-    : Promise.resolve();
-
-  const stored = await listMessages(userId, sessionId);
-  const messagesForApi: ApiMessage[] = stored
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .filter((m) => !(m.role === "assistant" && !m.content.trim()))
-    .map((m) => ({ role: m.role, content: m.content }));
-
-  if (!messagesForApi.length || messagesForApi[messagesForApi.length - 1]?.content !== question) {
-    messagesForApi.push({ role: "user", content: question });
-  }
-
-  let ragContext = "";
   try {
-    const chunks = await retrieveRelevantChunks(userId, messagesForApi);
-    ragContext = formatRagContext(chunks);
-  } catch {
-    ragContext = "";
-  }
+    let sessionId = providedSessionId;
+    let history: ThreadMessageDto[] = [];
+    if (sessionId) {
+      const loaded = await loadOwnedSessionThread(userId, sessionId);
+      if (loaded) {
+        history = loaded;
+      } else {
+        sessionId = await createChatSession(userId);
+      }
+    } else {
+      sessionId = await createChatSession(userId);
+    }
 
-  let assistantText = "";
-  try {
-    [assistantText] = await Promise.all([
-      requestAssistantReply(messagesForApi, model, ragContext),
-      runTitle,
-    ]);
-  } catch (error) {
-    await runTitle;
-    const now = nowIso();
-    const message = `Error calling OpenAI API: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-    await insertMessage({
+    const isFirstMessage = history.length === 0;
+    const userMessage = await insertMessage({
       userId,
       sessionId,
-      role: "assistant",
-      content: message,
+      role: "user",
+      content: question,
       model,
       tokenUsage: null,
     });
-    return NextResponse.json({
-      sessionId,
-      assistant: {
-        id: `assistant-error-${randomUUID()}`,
+    if (!userMessage) {
+      throw new Error("Could not save the user message.");
+    }
+
+    const runTitle: Promise<void> = isFirstMessage
+      ? (async () => {
+          try {
+            const title = await summarizeSessionTitle(question);
+            if (title) {
+              await updateChatSessionTitle(userId, sessionId, title);
+            }
+          } catch {
+            // Session title is optional.
+          }
+        })()
+      : Promise.resolve();
+
+    const messagesForApi = toApiMessages(history, question);
+
+    let ragContext = "";
+    try {
+      const chunks = await retrieveRelevantChunks(userId, messagesForApi);
+      ragContext = formatRagContext(chunks);
+    } catch {
+      ragContext = "";
+    }
+
+    let assistantText = "";
+    try {
+      [assistantText] = await Promise.all([
+        requestAssistantReply(messagesForApi, model, ragContext),
+        runTitle,
+      ]);
+    } catch (error) {
+      await runTitle;
+      const now = nowIso();
+      const message = `Error calling OpenAI API: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      const assistantMessage = await insertMessage({
+        userId,
+        sessionId,
         role: "assistant",
         content: message,
-        created_at: now,
-        time_display: formatMessageTimePtBr(now),
-      },
-      messages: await listMessages(userId, sessionId),
-    });
-  }
+        model,
+        tokenUsage: null,
+      });
+      return NextResponse.json({
+        sessionId,
+        assistant: {
+          id: assistantMessage?.id ?? `assistant-error-${randomUUID()}`,
+          role: "assistant",
+          content: message,
+          created_at: assistantMessage?.created_at ?? now,
+          time_display: assistantMessage?.time_display ?? formatMessageTimePtBr(now),
+        },
+        messages: [...history, userMessage, ...(assistantMessage ? [assistantMessage] : [])],
+      });
+    }
 
-  await insertMessage({
-    userId,
-    sessionId,
-    role: "assistant",
-    content: assistantText,
-    model,
-    tokenUsage: null,
-  });
-  return NextResponse.json({
-    sessionId,
-    assistantText,
-    messages: await listMessages(userId, sessionId),
-  });
+    const assistantMessage = await insertMessage({
+      userId,
+      sessionId,
+      role: "assistant",
+      content: assistantText,
+      model,
+      tokenUsage: null,
+    });
+    if (!assistantMessage) {
+      throw new Error("Could not save the assistant message.");
+    }
+    return NextResponse.json({
+      sessionId,
+      assistantText,
+      messages: [...history, userMessage, assistantMessage],
+    });
+  } catch (error) {
+    return dbFailureResponse(error);
+  }
 }
